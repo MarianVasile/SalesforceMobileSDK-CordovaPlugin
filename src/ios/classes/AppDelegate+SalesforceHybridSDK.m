@@ -45,6 +45,7 @@
     method_exchangeImplementations(class_getInstanceMethod(self, @selector(init)), class_getInstanceMethod(self, @selector(sfsdk_swizzled_init)));
     method_exchangeImplementations(class_getInstanceMethod(self, @selector(application:didFinishLaunchingWithOptions:)), class_getInstanceMethod(self, @selector(sfsdk_swizzled_application:didFinishLaunchingWithOptions:)));
     method_exchangeImplementations(class_getInstanceMethod(self, @selector(application:didRegisterForRemoteNotificationsWithDeviceToken:)), class_getInstanceMethod(self, @selector(sfsdk_swizzled_application:didRegisterForRemoteNotificationsWithDeviceToken:)));
+    method_exchangeImplementations(class_getInstanceMethod(self, @selector(application:openURL:sourceApplication:annotation:)), class_getInstanceMethod(self, @selector(sfsdk_swizzled_application:openURL:sourceApplication:annotation:)));
 }
 
 - (AppDelegate *)sfsdk_swizzled_init
@@ -102,7 +103,13 @@
     
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
     self.window.autoresizesSubviews = YES;
-    
+
+    if (launchOptions) {
+        if (launchOptions[UIApplicationLaunchOptionsURLKey]) {
+            [[SalesforceSDKManager sharedManager].appConfig.configDict setValue:launchOptions[UIApplicationLaunchOptionsURLKey] forKey:@"launchOptions"];
+        }
+    }
+
     [self initializeAppViewState];
     [[SalesforceSDKManager sharedManager] launch];
     return YES; // we don't want to run's Cordova didFinishLaunchingWithOptions - it creates another window with a webview
@@ -130,6 +137,24 @@
     // alerts implement  authManagerDidProceedWithBrowserFlow: & authManagerDidCancelBrowserFlow:
     // return [[SFAuthenticationManager sharedManager] handleAdvancedAuthenticationResponse:url];
     return NO;
+}
+
+// this happens while we are running ( in the background, or from within our own app )
+// only valid if Boston-Info.plist specifies a protocol to handle
+- (BOOL)sfsdk_swizzled_application:(UIApplication*)application openURL:(NSURL*)url sourceApplication:(NSString*)sourceApplication annotation:(id)annotation
+{
+    if (!url) {
+        return NO;
+    }
+
+    if ([self.viewController isKindOfClass:[SFHybridViewController class]]) {
+         [[SalesforceSDKManager sharedManager].appConfig.configDict removeObjectForKey:@"launchOptions"];
+    }
+
+    // all plugins will get the notification, and their handlers will be called
+    [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:CDVPluginHandleOpenURLNotification object:url]];
+
+    return YES;
 }
 
 - (void)handleSdkManagerLogout
