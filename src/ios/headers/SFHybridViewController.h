@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2012, salesforce.com, inc. All rights reserved.
+ Copyright (c) 2012-present, salesforce.com, inc. All rights reserved.
  Author: Kevin Hawkins
  
  Redistribution and use of this software in source and binary forms, with or without modification,
@@ -24,6 +24,7 @@
  */
 
 #import <Foundation/Foundation.h>
+#import <WebKit/WebKit.h>
 #import <Cordova/CDVViewController.h>
 #import "SFAuthenticationManager.h"
 #import "SFOAuthInfo.h"
@@ -55,10 +56,15 @@ typedef void (^SFOAuthPluginAuthSuccessBlock)(SFOAuthInfo *, NSDictionary *);
 /**
  Base view controller for Salesforce hybrid app components.
  */
-@interface SFHybridViewController : CDVViewController
+@interface SFHybridViewController : CDVViewController <WKNavigationDelegate, UIWebViewDelegate>
 {
     
 }
+
+/**
+ Indicates if UIWebView is being used instead of WKWebView.
+ */
+@property (nonatomic, readonly, assign) BOOL useUIWebView;
 
 /**
  The Remote Access object consumer key.
@@ -66,7 +72,7 @@ typedef void (^SFOAuthPluginAuthSuccessBlock)(SFOAuthInfo *, NSDictionary *);
 @property (nonatomic, readonly) NSString *remoteAccessConsumerKey;
 
 /**
- The Remote Access object redirect URI
+ The Remote Access object redirect URI.
  */
 @property (nonatomic, readonly) NSString *oauthRedirectURI;
 
@@ -76,7 +82,7 @@ typedef void (^SFOAuthPluginAuthSuccessBlock)(SFOAuthInfo *, NSDictionary *);
 @property (nonatomic, readonly) NSSet *oauthScopes;
 
 /**
- The full config
+ The full config.
  */
 @property (nonatomic, readonly) SFHybridViewConfig *hybridViewConfig;
 
@@ -87,10 +93,22 @@ typedef void (^SFOAuthPluginAuthSuccessBlock)(SFOAuthInfo *, NSDictionary *);
 @property (nonatomic, strong) NSURL *appHomeUrl;
 
 /**
- Designated initializer.  Initializes the view controller with its hybrid view configuration.
+ Designated initializer. Initializes the view controller with its hybrid view configuration. Uses WKWebView by default.
  @param viewConfig The hybrid view configuration associated with this component.
  */
-- (id)initWithConfig:(SFHybridViewConfig *)viewConfig;
+- (id) initWithConfig:(SFHybridViewConfig *) viewConfig;
+
+/**
+ Designated initializer. Initializes the view controller with its hybrid view configuration and which view to use.
+ @param viewConfig The hybrid view configuration associated with this component.
+ @param useUIWebView YES - to use UIWebView, NO - to use WKWebView.
+ */
+- (id) initWithConfig:(SFHybridViewConfig *) viewConfig useUIWebView:(BOOL) useUIWebView;
+
+/**
+ * Initializes a new Cordova view with the specified bounds and engine.
+ */
+- (UIView *)newCordovaViewWithFrameAndEngine:(CGRect)bounds webViewEngine:(NSString *)webViewEngine;
 
 /**
  Method used by the OAuth plugin to obtain the current login credentials, or authenticate if no
@@ -140,5 +158,12 @@ typedef void (^SFOAuthPluginAuthSuccessBlock)(SFOAuthInfo *, NSDictionary *);
  @return YES if the error is fatal, NO otherwise.
  */
 + (BOOL)isFatalWebViewError:(NSError *)error;
+
+/** 
+ Configures the startPage property to be embedded in the context of its remote bootstrapping absolute URL. The default method configures the startPage property into a frontdoor.jsp absolute URL.
+ 
+ Note: Do not override this method unless you know what you're doing. Improperly configuring the start page remote URL will cause your hybrid remote app to be unable to load. Your overriding method should set the startPage property to the remote URL to be loaded.
+ */
+- (void)configureRemoteStartPage;
 
 @end

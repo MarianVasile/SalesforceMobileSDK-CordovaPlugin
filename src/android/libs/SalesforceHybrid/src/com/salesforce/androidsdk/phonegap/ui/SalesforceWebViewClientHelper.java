@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2015, salesforce.com, inc.
+ * Copyright (c) 2014-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -30,16 +30,15 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.Editor;
 import android.net.Uri;
-import android.util.Log;
 import android.webkit.WebView;
 
+import com.salesforce.androidsdk.phonegap.util.SalesforceHybridLogger;
 import com.salesforce.androidsdk.util.EventsObservable;
 import com.salesforce.androidsdk.util.EventsObservable.EventType;
 import com.salesforce.androidsdk.util.UriFragmentParser;
 
-import org.apache.http.HttpStatus;
-
 import java.io.File;
+import java.net.HttpURLConnection;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
@@ -47,7 +46,7 @@ import java.util.Map;
 
 /**
  * Helper class for SalesforceWebViewClient.
- * 
+ *
  */
 public class SalesforceWebViewClientHelper {
 
@@ -61,17 +60,17 @@ public class SalesforceWebViewClientHelper {
 
     /**
      * To be called from shouldOverrideUrlLoading.
-     * 
+     *
      * @param ctx
      * @param view
      * @param url
      * @return
      */
-    public static boolean shouldOverrideUrlLoading(SalesforceDroidGapActivity ctx,
+    public static boolean shouldOverrideUrlLoading(Context ctx,
     		WebView view, String url) {
     	final String startURL = SalesforceWebViewClientHelper.isLoginRedirect(url);
-        if (startURL != null && ctx != null) {
-        	ctx.refresh(startURL);
+        if (startURL != null && ctx instanceof SalesforceDroidGapActivity) {
+            ((SalesforceDroidGapActivity) ctx).refresh(startURL);
         	return true;
         } else {
         	return false;
@@ -81,7 +80,7 @@ public class SalesforceWebViewClientHelper {
     /**
      * To be called from onPageFinished.
      * Return true if we have arrived on the actual home page and false otherwise.
-     * 
+     *
      * @param ctx			Context.
      * @param view          The webview initiating the callback.
      * @param url           The url of the page.
@@ -90,7 +89,7 @@ public class SalesforceWebViewClientHelper {
         // The first URL that's loaded that's not one of the URLs used in the bootstrap process will
         // be considered the "app home URL", which can be loaded directly in the event that the app is offline.
         if (!isReservedUrl(url)) {
-            Log.i(TAG,"Setting '" + url + "' as the home page URL for this app");
+            SalesforceHybridLogger.i(TAG, "Setting '" + url + "' as the home page URL for this app");
             SharedPreferences sp = ctx.getSharedPreferences(SFDC_WEB_VIEW_CLIENT_SETTINGS, Context.MODE_PRIVATE);
             Editor e = sp.edit();
             e.putString(APP_HOME_URL_PROP_KEY, url);
@@ -101,7 +100,7 @@ public class SalesforceWebViewClientHelper {
         	return false;
         }
     }
-    
+
     /**
      * @return app's home page
      */
@@ -119,7 +118,7 @@ public class SalesforceWebViewClientHelper {
     	String cachedAppHomeUrl = getAppHomeUrl(ctx);
     	return cachedAppHomeUrl != null && (new File(cachedAppHomeUrl)).exists();
     }
-    
+
     /**
      * Whether the given URL is one of the expected URLs used in the bootstrapping process
      * of the app.  Used for determining the app's "home page" URL.
@@ -147,8 +146,8 @@ public class SalesforceWebViewClientHelper {
     	final String ec = params.get("ec");
     	int ecInt = (ec != null ? Integer.parseInt(ec) : -1);
     	final String startURL = params.get("startURL");
-        if ((ecInt == HttpStatus.SC_MOVED_PERMANENTLY
-    			|| ecInt == HttpStatus.SC_MOVED_TEMPORARILY)
+        if ((ecInt == HttpURLConnection.HTTP_MOVED_PERM
+    			|| ecInt == HttpURLConnection.HTTP_MOVED_TEMP)
     			&& startURL != null) {
     		return startURL;
     	} else {

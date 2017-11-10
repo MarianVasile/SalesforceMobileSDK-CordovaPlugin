@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, salesforce.com, inc.
+ * Copyright (c) 2012-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -29,12 +29,12 @@ package com.salesforce.androidsdk.phonegap.util.test;
 import android.app.Instrumentation;
 import android.content.Intent;
 import android.test.InstrumentationTestCase;
-import android.util.Log;
 
 import com.salesforce.androidsdk.app.SalesforceSDKManager;
 import com.salesforce.androidsdk.phonegap.plugin.TestRunnerPlugin;
 import com.salesforce.androidsdk.phonegap.plugin.TestRunnerPlugin.TestResult;
 import com.salesforce.androidsdk.phonegap.ui.SalesforceDroidGapActivity;
+import com.salesforce.androidsdk.phonegap.util.SalesforceHybridLogger;
 import com.salesforce.androidsdk.util.EventsObservable.EventType;
 import com.salesforce.androidsdk.util.test.EventsListenerQueue;
 
@@ -49,6 +49,8 @@ import java.util.concurrent.TimeUnit;
  * Extend this class to run tests written in JavaScript
  */
 public abstract class JSTestCase extends InstrumentationTestCase {
+
+	private static final String TAG = "JSTestCase";
 
     private String jsSuite;
     private static Map<String, Map<String, TestResult>> testResults; 
@@ -72,9 +74,9 @@ public abstract class JSTestCase extends InstrumentationTestCase {
 
 	        // Wait for app initialization to complete
 			EventsListenerQueue eq = new EventsListenerQueue();
-	        if (SalesforceSDKManager.getInstance() == null) {
+	        if (!SalesforceSDKManager.hasInstance()) {
 	            eq.waitForEvent(EventType.AppCreateComplete, 5000);
-	        }			
+	        }
 
 			// Start main activity
     		Instrumentation instrumentation = getInstrumentation();
@@ -88,13 +90,18 @@ public abstract class JSTestCase extends InstrumentationTestCase {
 
 			// Now run all the tests and collect the resuts in testResults
 			for (String testName : getTestNames()) {
-		        String jsCmd = "navigator.testrunner.setTestSuite('" + jsSuite + "');" +
+		        final String jsCmd = "javascript:" + "navigator.testrunner.setTestSuite('" + jsSuite + "');" +
 		            "navigator.testrunner.startTest('" + testName + "');";
 				final CordovaWebView appView = activity.getAppView();
 				if (appView != null) {
-					appView.sendJavascript(jsCmd);
+                    appView.getView().post(new Runnable() {
+                        @Override
+                        public void run() {
+                                appView.loadUrl(jsCmd);
+                        }
+                    });
 				}
-				Log.i(getClass().getSimpleName(), "running test:" + testName);
+                SalesforceHybridLogger.i(TAG, "Running test: " + testName);
 		        
 		        // Block until test completes or times out
 		        TestResult result = null;
@@ -108,7 +115,7 @@ public abstract class JSTestCase extends InstrumentationTestCase {
 		        catch (Exception e) {
 	            	result = new TestResult(testName, false, "Test failed", timeout);
 		        }
-		        Log.i(getClass().getSimpleName(), "done running test:" + testName);
+                SalesforceHybridLogger.i(TAG, "Finished running test: " + testName);
 		        
 		        // Save result
 		        testResults.get(jsSuite).put(testName, result);

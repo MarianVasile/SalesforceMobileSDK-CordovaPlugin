@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, salesforce.com, inc.
+ * Copyright (c) 2014-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -31,11 +31,11 @@ import android.content.SharedPreferences;
 import android.content.SharedPreferences.Editor;
 import android.content.res.XmlResourceParser;
 import android.text.TextUtils;
-import android.util.Log;
 
 import com.salesforce.androidsdk.app.SalesforceSDKManager;
 import com.salesforce.androidsdk.config.RuntimeConfig.ConfigKey;
 import com.salesforce.androidsdk.ui.SalesforceR;
+import com.salesforce.androidsdk.util.SalesforceSDKLogger;
 
 import org.xmlpull.v1.XmlPullParserException;
 
@@ -51,6 +51,8 @@ import java.util.Map;
  */
 public class LoginServerManager {
 
+	private static final String TAG = "LoginServerManager";
+
 	// Default login servers.
     public static final String PRODUCTION_LOGIN_URL = "https://login.salesforce.com";
     public static final String SANDBOX_LOGIN_URL = "https://test.salesforce.com";
@@ -65,6 +67,7 @@ public class LoginServerManager {
 	private static final String SERVER_NAME = "server_name_%d";
 	private static final String SERVER_URL = "server_url_%d";
 	private static final String IS_CUSTOM = "is_custom_%d";
+    private static final String SERVER_SELECTION_FILE = "server_selection_file";
 
 	private Context ctx;
 	private LoginServer selectedServer;
@@ -83,14 +86,7 @@ public class LoginServerManager {
 		runtimePrefs = ctx.getSharedPreferences(RUNTIME_PREFS_FILE,
 				Context.MODE_PRIVATE);
     	initSharedPrefFile();
-    	final List<LoginServer> allServers = getLoginServers();
-    	selectedServer = new LoginServer("Production", PRODUCTION_LOGIN_URL, false);
-    	if (allServers != null) {
-    		final LoginServer server = allServers.get(0);
-    		if (server != null) {
-    			selectedServer = server;
-    		}
-    	}
+    	selectedServer = getSelectedLoginServer();
     }
 
     /**
@@ -120,6 +116,35 @@ public class LoginServerManager {
      * @return LoginServer instance.
      */
     public LoginServer getSelectedLoginServer() {
+        final SharedPreferences selectedServerPrefs = ctx.getSharedPreferences(SERVER_SELECTION_FILE,
+                Context.MODE_PRIVATE);
+        final String name = selectedServerPrefs.getString(SERVER_NAME, null);
+        final String url = selectedServerPrefs.getString(SERVER_URL, null);
+        boolean isCustom = selectedServerPrefs.getBoolean(IS_CUSTOM, false);
+
+        // Selection has been saved before.
+        if (name != null && url != null) {
+            final LoginServer server = new LoginServer(name, url, isCustom);
+            selectedServer = server;
+        } else {
+
+            // First time selection defaults to the first server on the list.
+            final List<LoginServer> allServers = getLoginServers();
+            if (allServers != null) {
+                final LoginServer server = allServers.get(0);
+                if (server != null) {
+                    selectedServer = server;
+                }
+            }
+
+            // For some reason, if it's still not set, sets it to the default.
+            if (selectedServer == null) {
+                selectedServer = new LoginServer("Production", PRODUCTION_LOGIN_URL, false);
+            }
+
+            // Stores the selection for the future.
+            setSelectedLoginServer(selectedServer);
+        }
     	return selectedServer;
     }
 
@@ -132,6 +157,14 @@ public class LoginServerManager {
     	if (server == null) {
     		return;
     	}
+        final SharedPreferences selectedServerPrefs = ctx.getSharedPreferences(SERVER_SELECTION_FILE,
+                Context.MODE_PRIVATE);
+        final Editor edit = selectedServerPrefs.edit();
+        edit.clear();
+        edit.putString(SERVER_NAME, server.name);
+        edit.putString(SERVER_URL, server.url);
+        edit.putBoolean(IS_CUSTOM, server.isCustom);
+        edit.commit();
     	selectedServer = server;
     }
 
@@ -168,6 +201,11 @@ public class LoginServerManager {
 		edit = runtimePrefs.edit();
 		edit.clear();
 		edit.commit();
+        final SharedPreferences selectedServerPrefs = ctx.getSharedPreferences(SERVER_SELECTION_FILE,
+                Context.MODE_PRIVATE);
+        edit = selectedServerPrefs.edit();
+        edit.clear();
+        edit.commit();
 		initSharedPrefFile();
 	}
 
@@ -200,8 +238,7 @@ public class LoginServerManager {
 		try {
 			mdmLoginServers = runtimeConfig.getStringArray(ConfigKey.AppServiceHosts);
 		} catch (Exception e) {
-			Log.w("LoginServerManager.getLoginServersFromRuntimeConfig",
-					"Exception thrown while attempting to read array, attempting to read string value instead");
+			SalesforceSDKLogger.w(TAG, "Exception thrown while attempting to read array, attempting to read string value instead", e);
 		}
 		if (mdmLoginServers == null) {
 			final String loginServer = runtimeConfig.getString(ConfigKey.AppServiceHosts);
@@ -215,8 +252,7 @@ public class LoginServerManager {
 			try {
 				mdmLoginServersLabels = runtimeConfig.getStringArray(ConfigKey.AppServiceHostLabels);
 			} catch (Exception e) {
-				Log.w("LoginServerManager.getLoginServersFromRuntimeConfig",
-						"Exception thrown while attempting to read array, attempting to read string value instead");
+                SalesforceSDKLogger.w(TAG, "Exception thrown while attempting to read array, attempting to read string value instead", e);
 			}
 			if (mdmLoginServersLabels == null) {
 				final String loginServerLabel = runtimeConfig.getString(ConfigKey.AppServiceHostLabels);
@@ -225,8 +261,7 @@ public class LoginServerManager {
 				}
 			}
 			if (mdmLoginServersLabels == null || mdmLoginServersLabels.length != mdmLoginServers.length) {
-				Log.w("LoginServerManager.getLoginServersFromRuntimeConfig",
-						"No login servers labels provided or wrong number of login servers labels provided - Using URLs for the labels");
+                SalesforceSDKLogger.w(TAG, "No login servers labels provided or wrong number of login servers labels provided - Using URLs for the labels");
 				mdmLoginServersLabels = mdmLoginServers;
 			}
             final List<LoginServer> storedServers = getLoginServersFromPreferences(runtimePrefs);
@@ -293,9 +328,9 @@ public class LoginServerManager {
 				try {
 					eventType = xml.next();
 				} catch (XmlPullParserException e) {
-					Log.w("LoginServerManager:getLoginServersFromXml", e);
+                    SalesforceSDKLogger.w(TAG, "Exception thrown while parsing XML", e);
 				} catch (IOException e) {
-					Log.w("LoginServerManager:getLoginServersFromXml", e);
+                    SalesforceSDKLogger.w(TAG, "Exception thrown while parsing XML", e);
 				}
 			}
 		}

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, salesforce.com, inc.
+ * Copyright (c) 2014-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -38,18 +38,20 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager.NameNotFoundException;
-import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.os.SystemClock;
 import android.provider.Settings;
-import android.util.Log;
+import android.text.TextUtils;
 import android.webkit.CookieManager;
 import android.webkit.CookieSyncManager;
 
 import com.salesforce.androidsdk.accounts.UserAccount;
 import com.salesforce.androidsdk.accounts.UserAccountManager;
+import com.salesforce.androidsdk.analytics.EventBuilderHelper;
+import com.salesforce.androidsdk.analytics.SalesforceAnalyticsManager;
+import com.salesforce.androidsdk.analytics.security.Encryptor;
 import com.salesforce.androidsdk.auth.AuthenticatorService;
 import com.salesforce.androidsdk.auth.HttpAccess;
 import com.salesforce.androidsdk.auth.OAuth2;
@@ -61,8 +63,7 @@ import com.salesforce.androidsdk.push.PushMessaging;
 import com.salesforce.androidsdk.push.PushNotificationInterface;
 import com.salesforce.androidsdk.rest.ClientManager;
 import com.salesforce.androidsdk.rest.ClientManager.LoginOptions;
-import com.salesforce.androidsdk.security.Encryptor;
-import com.salesforce.androidsdk.security.PRNGFixes;
+import com.salesforce.androidsdk.rest.RestClient;
 import com.salesforce.androidsdk.security.PasscodeManager;
 import com.salesforce.androidsdk.ui.AccountSwitcherActivity;
 import com.salesforce.androidsdk.ui.LoginActivity;
@@ -70,9 +71,13 @@ import com.salesforce.androidsdk.ui.PasscodeActivity;
 import com.salesforce.androidsdk.ui.SalesforceR;
 import com.salesforce.androidsdk.util.EventsObservable;
 import com.salesforce.androidsdk.util.EventsObservable.EventType;
+import com.salesforce.androidsdk.util.SalesforceSDKLogger;
 
 import java.net.URI;
 import java.util.List;
+import java.util.SortedSet;
+import java.util.TreeSet;
+import java.util.UUID;
 
 /**
  * This class serves as an interface to the various
@@ -88,12 +93,37 @@ public class SalesforceSDKManager {
     /**
      * Current version of this SDK.
      */
-    public static final String SDK_VERSION = "4.1.2";
+    public static final String SDK_VERSION = "5.3.0";
+
+    /**
+     * Intent action meant for instances of SalesforceSDKManager residing in other processes
+     * to order them to clean up in-memory caches
+     */
+    private static final String CLEANUP_INTENT_ACTION = "com.salesforce.CLEANUP";
+
+    // Receiver for CLEANUP_INTENT_ACTION broadcast
+    private CleanupReceiver cleanupReceiver;
+
+    // Key in broadcast for process id
+    private static final String PROCESS_ID_KEY = "processId";
+
+    // Unique per process id added to broadcast to prevent processing broadcast from own process
+    private static final String PROCESS_ID = UUID.randomUUID().toString();
+
+    // Key in broadcast for user account
+    private static final String USER_ACCOUNT = "userAccount";
+
+    /**
+     * Intent action that specifies that logout was completed.
+     */
+    public static final String LOGOUT_COMPLETE_INTENT_ACTION = "com.salesforce.LOGOUT_COMPLETE";
 
     /**
      * Default app name.
      */
     private static final String DEFAULT_APP_DISPLAY_NAME = "Salesforce";
+    private static final String TAG = "SalesforceSDKManager";
+    protected static String AILTN_APP_NAME;
 
     /**
      * Instance of the SalesforceSDKManager to use for this process.
@@ -123,6 +153,9 @@ public class SalesforceSDKManager {
     private PushNotificationInterface pushNotificationInterface;
     private String uid; // device id
     private volatile boolean loggedOut = false;
+    private SortedSet<String> features;
+    private List<String> additionalOauthKeys;
+    private String loginBrand;
 
     /**
      * PasscodeManager object lock.
@@ -143,6 +176,34 @@ public class SalesforceSDKManager {
     }
 
     /**
+     *
+     * @return true if SalesforceSDKManager has been initialized already
+     */
+    public static boolean hasInstance() {
+        return INSTANCE != null;
+    }
+
+    /**
+     * Sets the app name to be used by the analytics framework.
+     *
+     * @param appName App name.
+     */
+    public static void setAiltnAppName(String appName) {
+        if (!TextUtils.isEmpty(appName)) {
+            AILTN_APP_NAME = appName;
+        }
+    }
+
+    /**
+     * Returns the app name being used by the analytics framework.
+     *
+     * @return App name.
+     */
+    public static String getAiltnAppName() {
+        return AILTN_APP_NAME;
+    }
+
+    /**
      * Protected constructor.
      * @param context Application context.
      * @param keyImpl Implementation for KeyInterface.
@@ -156,8 +217,31 @@ public class SalesforceSDKManager {
     	this.keyImpl = keyImpl;
     	this.mainActivityClass = mainActivity;
     	if (loginActivity != null) {
-            this.loginActivityClass = loginActivity;	
+            this.loginActivityClass = loginActivity;
     	}
+        this.features  = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+
+        /*
+         * Checks if an analytics app name has already been set by the app.
+         * If not, fetches the default app name to be used and sets it.
+         */
+        final String currentAiltnAppName = getAiltnAppName();
+        if (TextUtils.isEmpty(currentAiltnAppName)) {
+            String ailtnAppName = null;
+            try {
+                final PackageInfo packageInfo = context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
+                ailtnAppName = context.getString(packageInfo.applicationInfo.labelRes);
+            } catch (NameNotFoundException e) {
+                SalesforceSDKLogger.e(TAG, "Package not found", e);
+            }
+            if (!TextUtils.isEmpty(ailtnAppName)) {
+                setAiltnAppName(ailtnAppName);
+            }
+        }
+
+        // If your app runs in multiple processes, all the SalesforceSDKManager need to run cleanup during a logout
+        cleanupReceiver = new CleanupReceiver();
+        context.registerReceiver(cleanupReceiver, new IntentFilter(SalesforceSDKManager.CLEANUP_INTENT_ACTION));
     }
 
     /**
@@ -263,19 +347,40 @@ public class SalesforceSDKManager {
     	return loginActivityClass;
     }
 
+    /**
+     * Returns unique device ID.
+     *
+     * @return Device ID.
+     */
+    public String getDeviceId() {
+        return uid;
+    }
+
 	/**
      * Returns login options associated with the app.
      *
 	 * @return LoginOptions instance.
 	 */
 	public LoginOptions getLoginOptions() {
-		if (loginOptions == null) {
-			final BootConfig config = BootConfig.getBootConfig(context);
-			loginOptions = new LoginOptions(null, getPasscodeHash(), config.getOauthRedirectURI(),
-	        		config.getRemoteAccessConsumerKey(), config.getOauthScopes());
-		}
-		return loginOptions;
+		return getLoginOptions(null, null);
 	}
+
+    public LoginOptions getLoginOptions(String jwt, String url) {
+        if (loginOptions == null) {
+            final BootConfig config = BootConfig.getBootConfig(context);
+            if (TextUtils.isEmpty(jwt)) {
+                loginOptions = new LoginOptions(url, getPasscodeHash(), config.getOauthRedirectURI(),
+                        config.getRemoteAccessConsumerKey(), config.getOauthScopes(), null);
+            } else {
+                loginOptions = new LoginOptions(url, getPasscodeHash(), config.getOauthRedirectURI(),
+                        config.getRemoteAccessConsumerKey(), config.getOauthScopes(), null, jwt);
+            }
+        } else {
+            loginOptions.setJwt(jwt);
+            loginOptions.setUrl(url);
+        }
+        return loginOptions;
+    }
 
 	/**
 	 * For internal use only. Initializes required components.
@@ -290,6 +395,7 @@ public class SalesforceSDKManager {
     		INSTANCE = new SalesforceSDKManager(context, keyImpl, mainActivity, loginActivity);
     	}
     	initInternal(context);
+        EventsObservable.get().notifyEvent(EventType.AppCreateComplete);
     }
 
 	/**
@@ -300,9 +406,6 @@ public class SalesforceSDKManager {
 	 */
     public static void initInternal(Context context) {
 
-    	// Applies PRNG fixes for certain older versions of Android.
-        PRNGFixes.apply();
-
         // Initializes the encryption module.
         Encryptor.init(context);
 
@@ -311,7 +414,6 @@ public class SalesforceSDKManager {
 
         // Upgrades to the latest version.
         SalesforceSDKUpgradeManager.getInstance().upgrade();
-        EventsObservable.get().notifyEvent(EventType.AppCreateComplete);
     }
 
     /**
@@ -459,7 +561,6 @@ public class SalesforceSDKManager {
         return adminPermsManager;
     }
 
-
     /**
      * Changes the passcode to a new value.
      *
@@ -473,6 +574,7 @@ public class SalesforceSDKManager {
 
         // Resets the cached encryption key, since the passcode has changed.
         encryptionKey = null;
+        SalesforceAnalyticsManager.changePasscode(oldPass, newPass);
         ClientManager.changePasscode(oldPass, newPass);
     }
 
@@ -505,12 +607,32 @@ public class SalesforceSDKManager {
     }
 
     /**
+     * Returns the login brand parameter.
+     *
+     * @return Login brand, if configured.
+     */
+    public String getLoginBrand() {
+    	return loginBrand;
+    }
+
+    /**
+     * Sets the login brand. In the following example, "<brand>" should be set here.
+     * https://community.force.com/services/oauth2/authorize/<brand>?response_type=code&...
+     * Note: This API might change in the future.
+     *
+     * @param loginBrand Login brand param.
+     */
+    public synchronized void setLoginBrand(String loginBrand) {
+        this.loginBrand = loginBrand;
+    }
+
+    /**
      * Returns the app display name used by the passcode dialog.
      *
      * @return App display string.
      */
     public String getAppDisplayString() {
-    	return DEFAULT_APP_DISPLAY_NAME;
+        return DEFAULT_APP_DISPLAY_NAME;
     }
 
     /**
@@ -541,12 +663,38 @@ public class SalesforceSDKManager {
     }
 
     /**
+     * Adds an additional set of OAuth keys to fetch and store from the token endpoint.
+     *
+     * @param additionalOauthKeys List of additional OAuth keys.
+     */
+    public void setAdditionalOauthKeys(List<String> additionalOauthKeys) {
+        this.additionalOauthKeys = additionalOauthKeys;
+    }
+
+    /**
+     * Returns the list of additional OAuth keys set for this application.
+     *
+     * @return List of additional OAuth keys.
+     */
+    public List<String> getAdditionalOauthKeys() {
+        return additionalOauthKeys;
+    }
+
+    /**
      * Cleans up cached credentials and data.
      *
      * @param frontActivity Front activity.
      * @param account Account.
      */
-    protected void cleanUp(Activity frontActivity, Account account) {
+    private void cleanUp(Activity frontActivity, Account account) {
+        final UserAccount userAccount = UserAccountManager.getInstance().buildUserAccount(account);
+
+        // Clean up in this process
+        cleanUp(userAccount);
+
+        // Have SalesforceSDKManager living in separate processes also clean up
+        sendCleanupIntent(userAccount);
+
         final List<UserAccount> users = getUserAccountManager().getAuthenticatedUsers();
 
         // Finishes front activity if specified, and if this is the last account.
@@ -572,6 +720,16 @@ public class SalesforceSDKManager {
             encryptionKey = null;
             UUIDManager.resetUuids();
         }
+    }
+
+    /**
+     * Clean up cached data
+     *
+     * @param userAccount
+     */
+    protected void cleanUp(UserAccount userAccount) {
+        SalesforceAnalyticsManager.reset(userAccount);
+        RestClient.clearCaches(userAccount);
     }
 
     /**
@@ -609,7 +767,7 @@ public class SalesforceSDKManager {
         if (accounts == null || accounts.size() == 0) {
         	startLoginPage();
         } else if (accounts.size() == 1) {
-        	userAccMgr.switchToUser(accounts.get(0));
+        	userAccMgr.switchToUser(accounts.get(0), UserAccountManager.USER_SWITCH_TYPE_LOGOUT, null);
         } else {
         	final Intent i = new Intent(context, switcherActivityClass);
     		i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -694,7 +852,7 @@ public class SalesforceSDKManager {
             try {
                 context.unregisterReceiver(pushReceiver);
             } catch (Exception e) {
-            	Log.e("SalesforceSDKManager:postPushUnregister", "Exception occurred while un-registering.", e);
+                SalesforceSDKLogger.e(TAG, "Exception occurred while unregistering", e);
             }
     		removeAccount(clientMgr, showLoginPage, refreshToken, clientId, loginServer, account, frontActivity);
         }
@@ -742,6 +900,7 @@ public class SalesforceSDKManager {
      * @param showLoginPage If true, displays the login page after removing the account.
      */
     public void logout(Account account, Activity frontActivity, final boolean showLoginPage) {
+        EventBuilderHelper.createAndStoreEvent("userLogout", null, TAG, null);
         final ClientManager clientMgr = new ClientManager(context, getAccountType(),
         		null, shouldLogoutWhenTokenRevoked());
         isLoggingOut = true;
@@ -841,6 +1000,7 @@ public class SalesforceSDKManager {
 
     private void notifyLogoutComplete(boolean showLoginPage) {
     	EventsObservable.get().notifyEvent(EventType.LogoutComplete);
+        sendLogoutCompleteIntent();
 		if (showLoginPage) {
 			startSwitcherActivityIfRequired();
 		}
@@ -864,15 +1024,29 @@ public class SalesforceSDKManager {
             appName = context.getString(packageInfo.applicationInfo.labelRes);
             appVersion = packageInfo.versionName;
         } catch (NameNotFoundException e) {
-            Log.w("SalesforceSDKManager:getUserAgent", e);
+            SalesforceSDKLogger.w(TAG, "Package info could not be retrieved", e);
         } catch (Resources.NotFoundException nfe) {
 
     	   	// A test harness such as Gradle does NOT have an application name.
-            Log.w("SalesforceSDKManager:getUserAgent", nfe);
+            SalesforceSDKLogger.w(TAG, "Package info could not be retrieved", nfe);
         }
         String appTypeWithQualifier = getAppType() + qualifier;
-        return String.format("SalesforceMobileSDK/%s android mobile/%s (%s) %s/%s %s uid_%s",
-                SDK_VERSION, Build.VERSION.RELEASE, Build.MODEL, appName, appVersion, appTypeWithQualifier, uid);
+        return String.format("SalesforceMobileSDK/%s android mobile/%s (%s) %s/%s %s uid_%s ftr_%s",
+                SDK_VERSION, Build.VERSION.RELEASE, Build.MODEL, appName, appVersion, appTypeWithQualifier, uid, TextUtils.join(".",features));
+    }
+
+    /**
+     * Adds AppFeature code to User Agent header for reporting.
+     */
+    public void registerUsedAppFeature(String appFeatureCode) {
+        features.add(appFeatureCode);
+    }
+
+    /**
+     * Removed AppFeature code to User Agent header for reporting.
+     */
+    public void unregisterUsedAppFeature(String appFeatureCode) {
+        features.remove(appFeatureCode);
     }
 
     /**
@@ -959,9 +1133,9 @@ public class SalesforceSDKManager {
 		@Override
 		protected Void doInBackground(Void... nothings) {
 	        try {
-	        	OAuth2.revokeRefreshToken(HttpAccess.DEFAULT, new URI(loginServer), clientId, refreshToken);
+	        	OAuth2.revokeRefreshToken(HttpAccess.DEFAULT, new URI(loginServer), refreshToken);
 	        } catch (Exception e) {
-	        	Log.w("SalesforceSDKManager:revokeToken", e);
+                SalesforceSDKLogger.w(TAG, "Revoking token failed", e);
 	        }
 	        return null;
 		}
@@ -1001,7 +1175,14 @@ public class SalesforceSDKManager {
     	return new ClientManager(getAppContext(), getAccountType(), getLoginOptions(), true);
     }
 
-	@TargetApi(Build.VERSION_CODES.LOLLIPOP)
+    /**
+     * @return ClientManager
+     */
+    public ClientManager getClientManager(String jwt, String url) {
+        return new ClientManager(getAppContext(), getAccountType(), getLoginOptions(jwt, url), true);
+    }
+
+    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
 	public void removeAllCookies() {
 
 		/*
@@ -1042,4 +1223,38 @@ public class SalesforceSDKManager {
 	        CookieSyncManager.getInstance().sync();
 		}
     }
+
+    private void sendLogoutCompleteIntent() {
+        final Intent intent = new Intent(LOGOUT_COMPLETE_INTENT_ACTION);
+        intent.setPackage(context.getPackageName());
+        context.sendBroadcast(intent);
+    }
+
+    private void sendCleanupIntent(UserAccount userAccount) {
+        final Intent intent = new Intent(CLEANUP_INTENT_ACTION);
+        intent.setPackage(context.getPackageName());
+        intent.putExtra(PROCESS_ID_KEY, PROCESS_ID);
+        if (null != userAccount) {
+            intent.putExtra(USER_ACCOUNT, userAccount.toBundle());
+        }
+        context.sendBroadcast(intent);
+    }
+
+    private class CleanupReceiver extends BroadcastReceiver {
+
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent != null
+                    && intent.getAction().equals(SalesforceSDKManager.CLEANUP_INTENT_ACTION)
+                    && !intent.getStringExtra(PROCESS_ID_KEY).equals(PROCESS_ID)) {
+
+                UserAccount userAccount = null;
+                if (intent.hasExtra(USER_ACCOUNT)) {
+                    userAccount = new UserAccount(intent.getBundleExtra(USER_ACCOUNT));
+                }
+                cleanUp(userAccount);
+            }
+        }
+    }
+
 }

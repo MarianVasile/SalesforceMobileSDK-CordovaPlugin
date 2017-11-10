@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-15, salesforce.com, inc.
+ * Copyright (c) 2012-present, salesforce.com, inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification, are permitted provided
@@ -25,7 +25,7 @@
  */
 
 // Version this js was shipped with
-var SALESFORCE_MOBILE_SDK_VERSION = "4.1.0";
+var SALESFORCE_MOBILE_SDK_VERSION = "5.3.0";
 var exec = function(pluginVersion, successCB, errorCB, service, action, args) {
     var tag = "TIMING " + service + ":" + action;
     console.time(tag);
@@ -36,14 +36,14 @@ var exec = function(pluginVersion, successCB, errorCB, service, action, args) {
             console.timeEnd(tag);
             if (typeof successCB === "function")
                 successCB.apply(null, arguments);
-        }, 
+        },
         function() {
             console.timeEnd(tag);
             console.error(tag + " failed");
             if (typeof errorCB === "function")
                 errorCB.apply(null, arguments);
-        }, 
-        service, action, args);                  
+        },
+        service, action, args);
 };
 
 /**

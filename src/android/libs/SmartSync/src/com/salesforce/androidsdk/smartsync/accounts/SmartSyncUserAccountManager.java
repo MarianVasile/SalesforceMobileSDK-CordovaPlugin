@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, salesforce.com, inc.
+ * Copyright (c) 2014-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -25,6 +25,8 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 package com.salesforce.androidsdk.smartsync.accounts;
+
+import android.text.TextUtils;
 
 import com.salesforce.androidsdk.accounts.UserAccount;
 import com.salesforce.androidsdk.accounts.UserAccountManager;
@@ -63,8 +65,17 @@ public class SmartSyncUserAccountManager extends UserAccountManager {
 
 	@Override
 	public void switchToNewUser() {
-		super.switchToNewUser();
-    	final UserAccount userAccount = SmartSyncUserAccountManager.getInstance().getCurrentUser();
+        switchToNewUser(null, null);
+	}
+
+    @Override
+	public void switchToNewUser(String jwt, String url) {
+		if (TextUtils.isEmpty(jwt) || TextUtils.isEmpty(url)) {
+			super.switchToNewUser();
+		} else {
+			super.switchToNewUser(jwt, url);
+		}
+		final UserAccount userAccount = SmartSyncUserAccountManager.getInstance().getCurrentUser();
 		CacheManager.softReset(userAccount);
 		MetadataManager.reset(userAccount);
 	}

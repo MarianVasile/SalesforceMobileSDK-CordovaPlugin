@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, salesforce.com, inc.
+ * Copyright (c) 2014-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -26,9 +26,6 @@
  */
 package com.salesforce.androidsdk.accounts;
 
-import java.util.ArrayList;
-import java.util.List;
-
 import android.accounts.Account;
 import android.accounts.AccountManager;
 import android.app.Activity;
@@ -37,10 +34,16 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.Editor;
 import android.os.Bundle;
+import android.text.TextUtils;
 
 import com.salesforce.androidsdk.app.SalesforceSDKManager;
 import com.salesforce.androidsdk.auth.AuthenticatorService;
 import com.salesforce.androidsdk.rest.ClientManager;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * This class acts as a manager that provides methods to access
@@ -69,6 +72,42 @@ public class UserAccountManager {
 	private static final String ORG_ID_KEY = "org_id";
 
 	public static final String USER_SWITCH_INTENT_ACTION = "com.salesforce.USERSWITCHED";
+
+	/**
+	 * Represents how the current user has been switched to, as found in an intent sent to a {@link android.content.BroadcastReceiver}
+	 * filtering {@link #USER_SWITCH_INTENT_ACTION}. User switching including logging in, logging out and switching between authenticated
+	 * users. For backwards compatibility, the case where the last user has logged out is not included, as this currently does not
+	 * send a broadcast.
+	 */
+	public static final String EXTRA_USER_SWITCH_TYPE = "com.salesforce.USER_SWITCH_TYPE";
+
+	/**
+	 * A switch has occurred between two authenticated users.
+	 *
+	 * <p>Use this constant with {@link #EXTRA_USER_SWITCH_TYPE}.</p>
+	 */
+	public static final int USER_SWITCH_TYPE_DEFAULT = -1;
+
+	/**
+	 * The first user has logged in and is being switched to. There were no users authenticated before this switch.
+	 *
+	 * <p>Use this constant with {@link #EXTRA_USER_SWITCH_TYPE}.</p>
+	 */
+	public static final int USER_SWITCH_TYPE_FIRST_LOGIN = 0;
+
+	/**
+	 * An additional user has logged in and is being switched to. There was at least one user authenticated before this switch.
+	 *
+	 * <p>Use this constant with {@link #EXTRA_USER_SWITCH_TYPE}.</p>
+	 */
+	public static final int USER_SWITCH_TYPE_LOGIN = 1;
+
+	/**
+	 * A user has a logged out and another authenticated user is being switched to.
+	 *
+	 * <p>Use this constant with {@link #EXTRA_USER_SWITCH_TYPE}.</p>
+	 */
+	public static final int USER_SWITCH_TYPE_LOGOUT = 2;
 
 	private static UserAccountManager INSTANCE;
 
@@ -232,6 +271,21 @@ public class UserAccountManager {
 	 * @param user User account to switch to.
 	 */
 	public void switchToUser(UserAccount user) {
+		// All that's known is that the user is being switched
+		switchToUser(user, USER_SWITCH_TYPE_DEFAULT, null);
+	}
+
+	/**
+	 * Switches to the specified user account.
+	 *
+	 * @param user the user account to switch to
+	 * @param userSwitchType a {@code USER_SWITCH_TYPE} constant
+	 * @param extras a optional Bundle of extras to pass additional
+	 *               information during user switch
+	 *
+	 * @see #switchToUser(UserAccount)
+	 */
+	public void switchToUser(UserAccount user, int userSwitchType, Bundle extras) {
 		if (user == null || !doesUserAccountExist(user)) {
 			switchToNewUser();
 			return;
@@ -250,7 +304,7 @@ public class UserAccountManager {
 		final Account account = cm.getAccountByName(user.getAccountName());
 		storeCurrentUserInfo(user.getUserId(), user.getOrgId());
 		cm.peekRestClient(account);
-		sendUserSwitchIntent();
+		sendUserSwitchIntent(userSwitchType, extras);
 	}
 
 	/**
@@ -260,12 +314,30 @@ public class UserAccountManager {
 	 * in ClientManager will return a RestClient instance for the new user.
 	 */
 	public void switchToNewUser() {
+        final Bundle options = SalesforceSDKManager.getInstance().getLoginOptions().asBundle();
+        switchToNewUserWithOptions(options);
+	}
+
+	/**
+	 * Kicks off the login flow to switch to a new user with jwt. Once the login
+	 * flow is complete, the context will automatically become the
+	 * new user's context and a call to peekRestClient() or getRestClient()
+	 * in ClientManager will return a RestClient instance for the new user.
+	 *
+	 * @param jwt JWT.
+	 * @param url Instance/My domain URL.
+	 */
+	public void switchToNewUser(String jwt, String url) {
+        Bundle options = SalesforceSDKManager.getInstance().getLoginOptions(jwt, url).asBundle();
+        switchToNewUserWithOptions(options);
+	}
+
+	private void switchToNewUserWithOptions (Bundle options) {
 		final Bundle reply = new Bundle();
 		final Intent i = new Intent(context, SalesforceSDKManager.getInstance().getLoginActivityClass());
 		i.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        final Bundle options = SalesforceSDKManager.getInstance().getLoginOptions().asBundle();
-        i.putExtras(options);
-        reply.putParcelable(AccountManager.KEY_INTENT, i);
+		i.putExtras(options);
+		reply.putParcelable(AccountManager.KEY_INTENT, i);
 		context.startActivity(i);
 	}
 
@@ -356,6 +428,21 @@ public class UserAccountManager {
 		if (encThumbnailUrl != null) {
 			thumbnailUrl = SalesforceSDKManager.decryptWithPasscode(encThumbnailUrl, passcodeHash);
 		}
+        Map<String, String> additionalOauthValues = null;
+        final List<String> additionalOauthKeys = SalesforceSDKManager.getInstance().getAdditionalOauthKeys();
+        if (additionalOauthKeys != null && !additionalOauthKeys.isEmpty()) {
+            additionalOauthValues = new HashMap<>();
+            for (final String key : additionalOauthKeys) {
+                if (!TextUtils.isEmpty(key)) {
+                    final String encValue = accountManager.getUserData(account, key);
+                    String value = null;
+                    if (encValue != null) {
+                        value = SalesforceSDKManager.decryptWithPasscode(encValue, passcodeHash);
+                    }
+                    additionalOauthValues.put(key, value);
+                }
+            }
+        }
 		final String encCommunityId = accountManager.getUserData(account, AuthenticatorService.KEY_COMMUNITY_ID);
         String communityId = null;
         if (encCommunityId != null) {
@@ -373,7 +460,8 @@ public class UserAccountManager {
 		}
 		return new UserAccount(authToken, refreshToken, loginServer, idUrl,
 				instanceServer, orgId, userId, username, accountName, clientId,
-				communityId, communityUrl, firstName, lastName, displayName, email, photoUrl, thumbnailUrl);
+				communityId, communityUrl, firstName, lastName, displayName, email, photoUrl,
+				thumbnailUrl, additionalOauthValues);
 	}
 
 	/**
@@ -416,8 +504,25 @@ public class UserAccountManager {
 	 * Broadcasts an intent that a user switch has occurred.
 	 */
 	public void sendUserSwitchIntent() {
+		// By default, the type of switch is not known
+		sendUserSwitchIntent(USER_SWITCH_TYPE_DEFAULT, null);
+	}
+
+	/**
+	 * Broadcasts an intent that a user switch has occurred.
+	 *
+	 * @param userSwitchType
+	 *         a {@code USER_SWITCH_TYPE} constant
+	 * @param extras
+	 *         an optional Bundle of extras to add to the broadcast intent
+	 */
+	public final void sendUserSwitchIntent(int userSwitchType, Bundle extras) {
 		final Intent intent = new Intent(USER_SWITCH_INTENT_ACTION);
 		intent.setPackage(context.getPackageName());
+		intent.putExtra(EXTRA_USER_SWITCH_TYPE, userSwitchType);
+        if (extras != null) {
+            intent.putExtras(extras);
+        }
 		SalesforceSDKManager.getInstance().getAppContext().sendBroadcast(intent);
 	}
 }

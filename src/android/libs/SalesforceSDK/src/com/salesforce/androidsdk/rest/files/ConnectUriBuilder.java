@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, salesforce.com, inc.
+ * Copyright (c) 2013-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -45,7 +45,7 @@ public class ConnectUriBuilder {
     private static final String VERSIONNUMBER = "versionNumber";
 
     public ConnectUriBuilder() {
-        this(Uri.parse(ApiVersionStrings.BASE_CHATTER_PATH).buildUpon());
+        this(Uri.parse(ApiVersionStrings.getBaseChatterPath()).buildUpon());
     }
 
     public ConnectUriBuilder(Uri.Builder b) {

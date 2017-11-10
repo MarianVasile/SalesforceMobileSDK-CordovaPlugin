@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, salesforce.com, inc.
+ * Copyright (c) 2014-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -76,7 +76,7 @@ public class AccountSwitcherActivity extends Activity {
 		final SalesforceAccountRadioButton rb = (SalesforceAccountRadioButton) radioGroup.findViewById(checkedId);
 		if (rb != null) {
 			final UserAccount account = rb.getAccount();
-			userAccMgr.switchToUser(account);
+			userAccMgr.switchToUser(account, UserAccountManager.USER_SWITCH_TYPE_DEFAULT, null);
 		}
 		finish();
 	}

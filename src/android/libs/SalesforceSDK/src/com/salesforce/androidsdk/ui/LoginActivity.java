@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2015, salesforce.com, inc.
+ * Copyright (c) 2011-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -37,10 +37,13 @@ import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowManager;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 
+import com.salesforce.androidsdk.accounts.UserAccount;
 import com.salesforce.androidsdk.accounts.UserAccountManager;
+import com.salesforce.androidsdk.analytics.SalesforceAnalyticsManager;
 import com.salesforce.androidsdk.app.SalesforceSDKManager;
 import com.salesforce.androidsdk.config.RuntimeConfig;
 import com.salesforce.androidsdk.config.RuntimeConfig.ConfigKey;
@@ -49,6 +52,8 @@ import com.salesforce.androidsdk.security.PasscodeManager;
 import com.salesforce.androidsdk.ui.OAuthWebviewHelper.OAuthWebviewHelperEvents;
 import com.salesforce.androidsdk.util.EventsObservable;
 import com.salesforce.androidsdk.util.EventsObservable.EventType;
+
+import java.util.List;
 
 /**
  * Login Activity: takes care of authenticating the user.
@@ -85,6 +90,10 @@ public class LoginActivity extends AccountAuthenticatorActivity
 		LoginOptions loginOptions = LoginOptions.fromBundle(getIntent().getExtras());
 
 		requestFeatures();
+
+		// Protect against screenshots
+		getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE,
+				WindowManager.LayoutParams.FLAG_SECURE);
 
 		// Setup content view
 		setContentView(salesforceR.layoutLogin());
@@ -225,7 +234,9 @@ public class LoginActivity extends AccountAuthenticatorActivity
 	@Override
 	public void loadingLoginPage(String loginUrl) {
 		final ActionBar ab = getActionBar();
-		ab.setTitle(loginUrl);
+		if (ab != null) {
+			ab.setTitle(loginUrl);
+		}
 	}
 
 	@Override
@@ -297,7 +308,32 @@ public class LoginActivity extends AccountAuthenticatorActivity
 
 	@Override
 	public void finish() {
-        SalesforceSDKManager.getInstance().getUserAccountManager().sendUserSwitchIntent();
+        initAnalyticsManager();
+        final UserAccountManager userAccountManager = SalesforceSDKManager.getInstance().getUserAccountManager();
+        final List<UserAccount> authenticatedUsers = userAccountManager.getAuthenticatedUsers();
+        final int numAuthenticatedUsers = authenticatedUsers == null ? 0 : authenticatedUsers.size();
+
+        final int userSwitchType;
+        if (numAuthenticatedUsers == 1) {
+            // We've already authenticated the first user, so there should be one
+            userSwitchType = UserAccountManager.USER_SWITCH_TYPE_FIRST_LOGIN;
+        } else if (numAuthenticatedUsers > 1) {
+            // Otherwise we're logging in with an additional user
+            userSwitchType = UserAccountManager.USER_SWITCH_TYPE_LOGIN;
+        } else {
+            // This should never happen but if it does, pass in the "unknown" value
+            userSwitchType = UserAccountManager.USER_SWITCH_TYPE_DEFAULT;
+        }
+
+        userAccountManager.sendUserSwitchIntent(userSwitchType, null);
         super.finish();
 	}
+
+    private void initAnalyticsManager() {
+        final UserAccount account = SalesforceSDKManager.getInstance().getUserAccountManager().getCurrentUser();
+        final SalesforceAnalyticsManager analyticsManager = SalesforceAnalyticsManager.getInstance(account);
+	    if (analyticsManager != null) {
+            analyticsManager.updateLoggingPrefs();
+	    }
+    }
 }

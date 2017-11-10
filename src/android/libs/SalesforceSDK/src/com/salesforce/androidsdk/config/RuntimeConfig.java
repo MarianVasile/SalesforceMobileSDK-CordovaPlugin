@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2015, salesforce.com, inc.
+ * Copyright (c) 2014-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -32,12 +32,32 @@ import android.content.RestrictionsManager;
 import android.os.Build;
 import android.os.Bundle;
 
+import com.salesforce.androidsdk.analytics.EventBuilderHelper;
+import com.salesforce.androidsdk.app.SalesforceSDKManager;
+import com.salesforce.androidsdk.util.SalesforceSDKLogger;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /**
  * Classes responsible for reading runtime configurations (from MDM provider).
  * For an example, see the ConfiguratorApp and ConfiguredApp sample applications.
  */
 public class RuntimeConfig {
-	
+
+	private static final String TAG = "RuntimeConfig";
+
+	private static final String FEATURE_MDM = "MM";
+
+	private static final String FEATURE_CERT_AUTH = "CT";
+
+	// background executor
+	private final ExecutorService threadPool = Executors.newFixedThreadPool(1);
+
 	public enum ConfigKey {
 
         // The keys here should match the key entries in 'app_restrictions.xml'.
@@ -46,21 +66,53 @@ public class RuntimeConfig {
 		ManagedAppOAuthID,
 		ManagedAppCallbackURL,
 		RequireCertAuth,
-		ManagedAppCertAlias;
+		ManagedAppCertAlias,
+		OnlyShowAuthorizedHosts
 	}
 
     private boolean isManaged = false;
 	private Bundle configurations = null;
-	
+
 	private static RuntimeConfig INSTANCE = null;
 
 	private RuntimeConfig(Context ctx) {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
 			configurations = getRestrictions(ctx);
             isManaged = hasRestrictionsProvider(ctx);
+
+			// Register MDM App Feature for User-Agent reporting
+			if(isManaged && configurations!=null && !configurations.isEmpty()){
+				SalesforceSDKManager.getInstance().registerUsedAppFeature(FEATURE_MDM);
+				if(getBoolean(RuntimeConfig.ConfigKey.RequireCertAuth)){
+					SalesforceSDKManager.getInstance().registerUsedAppFeature(FEATURE_CERT_AUTH);
+				}
+			}
+
+            // Logs analytics event for MDM.
+			threadPool.execute(new Runnable() {
+				@Override
+				public void run() {
+					final JSONObject attributes = new JSONObject();
+					try {
+						attributes.put("mdmIsActive", isManaged);
+						if (configurations != null) {
+							final JSONObject mdmValues = new JSONObject();
+							final Set<String> keys = configurations.keySet();
+							for (final String key : keys) {
+								mdmValues.put(key, JSONObject.wrap(configurations.get(key)));
+							}
+							attributes.put("mdmConfigs", mdmValues);
+						}
+					} catch (JSONException e) {
+						SalesforceSDKLogger.e(TAG, "Exception thrown while creating JSON", e);
+					}
+					EventBuilderHelper.createAndStoreEventSync("mdmConfiguration", null, TAG, attributes);
+				}
+			});
+
         }
 	}
-	
+
 	/**
      * Method to (build and) get the singleton instance.
      *
@@ -108,8 +160,8 @@ public class RuntimeConfig {
 	public Boolean getBoolean(ConfigKey configKey) {
 		return (configurations == null ? false : configurations.getBoolean(configKey.name()));
 	}
-	
-	@TargetApi(Build.VERSION_CODES.LOLLIPOP) 
+
+	@TargetApi(Build.VERSION_CODES.LOLLIPOP)
 	private Bundle getRestrictions(Context ctx) {
 		RestrictionsManager restrictionsManager = (RestrictionsManager) ctx.getSystemService(Context.RESTRICTIONS_SERVICE);
 		return restrictionsManager.getApplicationRestrictions();

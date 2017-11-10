@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2011, salesforce.com, inc. All rights reserved.
+ Copyright (c) 2011-present, salesforce.com, inc. All rights reserved.
  
  Redistribution and use of this software in source and binary forms, with or without modification,
  are permitted provided that the following conditions are met:
@@ -22,10 +22,11 @@
  WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#import <SafariServices/SafariServices.h>
 #import <Security/Security.h>
 #import <UIKit/UIKit.h>
+#import <WebKit/WebKit.h>
 #import "SFOAuthCredentials.h"
-
 
 @class SFOAuthCoordinator;
 @class SFOAuthInfo;
@@ -59,7 +60,9 @@ enum {
     kSFOAuthErrorUnsupportedResponseType,
     kSFOAuthErrorWrongVersion,              // credentials do not match current Connected App version in the org
     kSFOAuthErrorBrowserLaunchFailed,
-    kSFOAuthErrorUnknownAdvancedAuthConfig
+    kSFOAuthErrorUnknownAdvancedAuthConfig,
+    kSFOAuthErrorInvalidMDMConfiguration,
+    kSFOAuthErrorJWTInvalidGrant
 };
 
 /**
@@ -94,16 +97,22 @@ typedef NS_ENUM(NSUInteger, SFOAuthAdvancedAuthState) {
     SFOAuthAdvancedAuthStateNotStarted = 0,
     
     /**
-     The advanced authentication flow has initiated a request through the external browser (Safari).
+     The advanced authentication flow has initiated a request through Safari view controller.
      */
     SFOAuthAdvancedAuthStateBrowserRequestInitiated,
     
     /**
-     The advanced authentication flow has received a response from the external browser, and has
+     The advanced authentication flow has received a response from Safari view controller, and has
      initiated a token exchange request.
      */
     SFOAuthAdvancedAuthStateTokenRequestInitiated
 };
+
+/**
+ Callback block used for the browser flow authentication.
+ @see oauthCoordinator:willBeginBrowserAuthentication:
+ */
+typedef void (^SFOAuthBrowserFlowCallbackBlock)(BOOL);
 
 /** Protocol for objects intending to be a delegate for an OAuth coordinator.
  
@@ -118,29 +127,30 @@ typedef NS_ENUM(NSUInteger, SFOAuthAdvancedAuthState) {
 
 /** Sent when authentication will begin.
  
- This method supplies the delegate with the UIWebView instance, which the user will use to input their OAuth credentials 
- during the login process. At the time this method is called the UIWebView may not yet have any content loaded, 
- therefore the UIWebView should not be displayed until willBeginAuthenticationWithView:
+ This method supplies the delegate with the WKWebView instance, which the user will use to input their OAuth credentials
+ during the login process. At the time this method is called the WKWebView may not yet have any content loaded,
+ therefore the WKWebView should not be displayed until willBeginAuthenticationWithView:
  
  @param coordinator The SFOAuthCoordinator instance processing this message
- @param view        The UIWebView instance that will be used to conduct the authentication workflow
+ @param view        The WKWebView instance that will be used to conduct the authentication workflow
  
  @see SFOAuthCoordinator
  */
-- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator willBeginAuthenticationWithView:(UIWebView *)view;
+- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator willBeginAuthenticationWithView:(WKWebView *)view;
 
 /** Sent when the web will starts to load its content.
  @param coordinator The SFOAuthCoordinator instance processing this message
- @param view        The UIWebView instance that will be used to conduct the authentication workflow
+ @param view        The WKWebView instance that will be used to conduct the authentication workflow
  */
-- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didStartLoad:(UIWebView *)view;
+- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didStartLoad:(WKWebView *)view;
+
 
 /** Sent when the web will completed to load its content.
  @param coordinator The SFOAuthCoordinator instance processing this message
- @param view        The UIWebView instance that will be used to conduct the authentication workflow
+ @param view        The WKWebView instance that will be used to conduct the authentication workflow
  @param errorOrNil  Contains the error or `nil` if no error
  */
-- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didFinishLoad:(UIWebView *)view error:(NSError*)errorOrNil;
+- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didFinishLoad:(WKWebView *)view error:(NSError*)errorOrNil;
 
 /**
  Sent when authentication successfully completes. Note: This method is deprecated.  You should use
@@ -156,6 +166,7 @@ typedef NS_ENUM(NSUInteger, SFOAuthAdvancedAuthState) {
  Sent before oauthcoordinator will begin any kind of authentication
  
  @param coordinator The SFOAuthCoordinator instance processing this message
+ @param info The SFOAuthInfo instance containing details about the type of authentication.
  */
 - (void)oauthCoordinatorWillBeginAuthentication:(SFOAuthCoordinator *)coordinator authInfo:(SFOAuthInfo *)info;
 
@@ -192,9 +203,42 @@ typedef NS_ENUM(NSUInteger, SFOAuthAdvancedAuthState) {
 - (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didFailWithError:(NSError *)error authInfo:(SFOAuthInfo *)info;
 
 /**
- The delegate can implement this method to return a BOOL indicating if the network is available or not
+ The delegate can implement this method to return a BOOL indicating whether the network is available.
+ @param coordinator The SFOAuthCoordinator object to be queried (typically self).
  */
 - (BOOL)oauthCoordinatorIsNetworkAvailable:(SFOAuthCoordinator*)coordinator;
+
+/**
+ Sent to notify the delegate that a browser authentication flow is about to begin.
+ 
+ If the delegate implements this method, it is responsible for using the callbackBlock to let the coordinator know
+ whether it should proceed with the browser flow or not.
+ 
+ @param coordinator   The SFOAuthCoordinator instance processing this message.
+ @param callbackBlock A callback block used to notify the coordinator if it should continue with the authentication flow.
+ Pass in YES to proceed, NO to cancel the authentication flow.
+ */
+- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator willBeginBrowserAuthentication:(SFOAuthBrowserFlowCallbackBlock)callbackBlock;
+
+/**
+ The delegate is expected to display an alert with the specific message and callback the completion block when
+ the user dismisses the alert.
+ 
+ @param coordinator The SFOAuthCoordinator instance
+ @param message The message to display
+ @param completion The completion block to invoke
+ */
+- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator displayAlertMessage:(NSString*)message completion:(dispatch_block_t)completion;
+
+/**
+ The delegate is expected to display a confirmation alert with the specific message and callback the completion block when
+ the user dismisses the alert.
+ 
+ @param coordinator The SFOAuthCoordinator instance
+ @param message The message to display
+ @param completion The completion block to invoke with YES as result if the user confirmed the alert or NO if the user cancelled the alert.
+ */
+- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator displayConfirmationMessage:(NSString*)message completion:(void (^)(BOOL result))completion;
 
 @required
 
@@ -206,17 +250,35 @@ typedef NS_ENUM(NSUInteger, SFOAuthAdvancedAuthState) {
  @warning the view parameter must be added to a superview upon completion of this method or an assert will fail
  
  @param coordinator The SFOAuthCoordinator instance processing this message
- @param view        The UIWebView instance that will be used to conduct the authentication workflow
+ @param view        The WKWebView instance that will be used to conduct the authentication workflow
  
  @see SFOAuthCoordinator
  */
-- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didBeginAuthenticationWithView:(UIWebView *)view;
+- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didBeginAuthenticationWithView:(WKWebView *)view;
+
+/** Sent after VC has been initialized with authentication URL.
+ 
+ The receiver should present the VC in the implementation of this method.
+ 
+ @param coordinator The SFOAuthCoordinator instance processing this message
+ @param svc         The SFSafariViewController instance that will be used to conduct the authentication workflow
+ 
+ @see SFOAuthCoordinator
+ */
+- (void)oauthCoordinator:(SFOAuthCoordinator *)coordinator didBeginAuthenticationWithSafariViewController:(SFSafariViewController *)svc;
+
+/**
+ Sent to notify the delegate that a browser authentication flow was cancelled out of by the user.
+
+ @param coordinator   The SFOAuthCoordinator instance processing this message.
+ */
+- (void)oauthCoordinatorDidCancelBrowserAuthentication:(SFOAuthCoordinator *)coordinator;
 
 @end
 
 /** The `SFOAuthCoordinator` class is the central class of the OAuth2 authentication process.
  
- This class manages a `UIWebView` instance and monitors it as it works its way
+ This class manages a `WKWebView` instance and monitors it as it works its way
  through the various stages of the OAuth2 workflow. When authentication is complete,
  the coordinator instance extracts the necessary session information from the response
  and updates the `SFOAuthCredentials` object as necessary.
@@ -225,7 +287,7 @@ typedef NS_ENUM(NSUInteger, SFOAuthAdvancedAuthState) {
  the Security framework and either the NSJSONSerialization iOS 5.0 SDK class 
  or the third party SBJsonParser class.
  */
-@interface SFOAuthCoordinator : NSObject <UIWebViewDelegate> {
+@interface SFOAuthCoordinator : NSObject <WKNavigationDelegate, WKUIDelegate, SFSafariViewControllerDelegate> {
 }
 
 /** User credentials to use within the authentication process.
@@ -285,7 +347,7 @@ typedef NS_ENUM(NSUInteger, SFOAuthAdvancedAuthState) {
  This is only guaranteed to be non-`nil` after one of the delegate methods returning a web view has been called.
  @see SFOAuthCoordinatorDelegate
  */
-@property (nonatomic, readonly) UIWebView *view;
+@property (nonatomic, readonly) WKWebView *view;
 
 /**
  The user agent string that will be used for authentication.  While this property will persist throughout
@@ -293,6 +355,22 @@ typedef NS_ENUM(NSUInteger, SFOAuthAdvancedAuthState) {
  its original value in between authentication requests.
  */
 @property (nonatomic, copy) NSString *userAgentForAuth;
+
+/**
+ An array of additional keys (NSString) to parse during OAuth
+ */
+@property (nonatomic, strong) NSArray * additionalOAuthParameterKeys;
+
+/**
+ A dictionary of additional parameters (key value pairs) to send during token refresh
+ */
+@property (nonatomic, strong) NSDictionary * additionalTokenRefreshParams;
+
+/** Brand Login Path.
+ The brand login path used for the authorize endpoint e.g. /brand in
+ https://community.force.com/services/oauth2/authorize/<brand>?response_type=code&...
+ */
+@property (nonatomic, copy) NSString *brandLoginPath;
 
 ///---------------------------------------------------------------------------------------
 /// @name Initialization

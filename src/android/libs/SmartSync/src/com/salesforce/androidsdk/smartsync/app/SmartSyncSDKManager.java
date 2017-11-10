@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, salesforce.com, inc.
+ * Copyright (c) 2014-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -122,8 +122,7 @@ public class SmartSyncSDKManager extends SmartStoreSDKManager {
     }
 
     @Override
-    protected void cleanUp(Activity frontActivity, Account account) {
-    	final UserAccount userAccount = SmartSyncUserAccountManager.getInstance().buildUserAccount(account);
+    protected void cleanUp(UserAccount userAccount) {
     	MetadataManager.reset(userAccount);
 
     	/*
@@ -131,8 +130,8 @@ public class SmartSyncSDKManager extends SmartStoreSDKManager {
     	 * the underlying database will be wiped in the super class.
     	 */
     	CacheManager.softReset(userAccount);
-    	SyncManager.reset();
-        super.cleanUp(frontActivity, account);
+    	SyncManager.reset(userAccount);
+        super.cleanUp(userAccount);
     }
 
     @Override

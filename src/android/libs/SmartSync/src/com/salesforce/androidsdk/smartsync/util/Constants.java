@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, salesforce.com, inc.
+ * Copyright (c) 2014-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -42,6 +42,8 @@ public class Constants {
 
     public static final String ID = "Id";
     public static final String NAME = "Name";
+    public static final String LAST_NAME = "LastName";
+    public static final String DESCRIPTION = "Description";
     public static final String TYPE = "Type";
     public static final String ATTRIBUTES = "attributes";
     public static final String RECENTLY_VIEWED = "RecentlyViewed";
@@ -52,6 +54,7 @@ public class Constants {
 	public static final String TOTAL_SIZE = "totalSize";
 	public static final String RECENT_ITEMS = "recentItems";
     public static final String LAST_MODIFIED_DATE = "LastModifiedDate";
+    public static final String CONTACTS = "Contacts";
 
     /**
      * Salesforce object types.

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, salesforce.com, inc.
+ * Copyright (c) 2014-present, salesforce.com, inc.
  * All rights reserved.
  * Redistribution and use of this software in source and binary forms, with or
  * without modification, are permitted provided that the following conditions
@@ -26,22 +26,23 @@
  */
 package com.salesforce.androidsdk.security;
 
-import java.io.File;
-import java.io.FilenameFilter;
-
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.Editor;
 import android.os.Handler;
-import android.util.Log;
 
 import com.salesforce.androidsdk.accounts.UserAccount;
+import com.salesforce.androidsdk.analytics.EventBuilderHelper;
+import com.salesforce.androidsdk.analytics.security.Encryptor;
 import com.salesforce.androidsdk.app.SalesforceSDKManager;
 import com.salesforce.androidsdk.app.UUIDManager;
 import com.salesforce.androidsdk.util.EventsObservable;
 import com.salesforce.androidsdk.util.EventsObservable.EventType;
+
+import java.io.File;
+import java.io.FilenameFilter;
 
 /**
  * This class manages the inactivity timeout, and keeps track of if the UI should locked etc.
@@ -58,6 +59,7 @@ public class PasscodeManager  {
 	private static final String EKEY = "ekey";
 	private static final String ESUFFIX = "esuffix";
 	private static final String EPREFIX = "eprefix";
+    private static final String TAG = "PasscodeManager";
 	
     // Default min passcode length
     public static final int MIN_PASSCODE_LENGTH = 4;
@@ -83,6 +85,9 @@ public class PasscodeManager  {
     // Key used to specify that a longer passcode needs to be created.
     public static final String CHANGE_PASSCODE_KEY = "change_passcode";
 
+    // Key in preference for failed attempts
+    private static final String FAILED_ATTEMPTS = "failed_attempts";
+
     // this is a hash of the passcode to be used as part of the key to encrypt/decrypt oauth tokens
     // It's using a different salt/key than the one used to verify the entry
     private String passcodeHash;
@@ -90,11 +95,10 @@ public class PasscodeManager  {
     // Misc
     private HashConfig verificationHashConfig;
     private HashConfig encryptionHashConfig;
-    private int failedPasscodeAttempts;
     private Activity frontActivity;
     private Handler handler;
     private long lastActivity;
-    private boolean locked;
+    boolean locked;
     private int timeoutMs;
     private int minPasscodeLength;
     private LockChecker lockChecker;
@@ -103,8 +107,6 @@ public class PasscodeManager  {
      * Parameterized constructor.
      *
      * @param ctx Context.
-     * @param verificationHashConfig Verification HashConfig.
-     * @param encryptionHashConfig Encryption HashConfig.
      */
    public PasscodeManager(Context ctx) {
 	   this(ctx,
@@ -235,12 +237,12 @@ public class PasscodeManager  {
     	}
     	lastActivity = now();
         locked = true;
-        failedPasscodeAttempts = 0;
         passcodeHash = null;
         SharedPreferences sp = ctx.getSharedPreferences(PASSCODE_PREF_NAME,
         		Context.MODE_PRIVATE);
         Editor e = sp.edit();
         e.remove(KEY_PASSCODE);
+        e.remove(FAILED_ATTEMPTS);
         e.commit();
         timeoutMs = 0;
         minPasscodeLength = MIN_PASSCODE_LENGTH;
@@ -291,7 +293,9 @@ public class PasscodeManager  {
      * @return the new failure count
      */
     public int addFailedPasscodeAttempt() {
-        return ++failedPasscodeAttempts;
+        int failedAttempts = getFailedPasscodeAttempts() + 1;
+        setFailedPasscodeAttempts(failedAttempts);
+        return failedAttempts;
     }
 
     /**
@@ -302,7 +306,7 @@ public class PasscodeManager  {
     public boolean check(Context ctx, String passcode) {
         SharedPreferences sp = ctx.getSharedPreferences(PASSCODE_PREF_NAME, Context.MODE_PRIVATE);
         String hashedPasscode = sp.getString(KEY_PASSCODE, null);
-        hashedPasscode = Encryptor.removeNewLine(hashedPasscode);
+        hashedPasscode = removeNewLine(hashedPasscode);
         if (hashedPasscode != null) {
             return hashedPasscode.equals(hashForVerification(passcode));
         }
@@ -311,6 +315,20 @@ public class PasscodeManager  {
          * If the stored passcode hash is null, there is no passcode.
          */
         return true;
+    }
+
+    /**
+     * Removes a trailing newline character from the hash.
+     *
+     * @param hash Hash.
+     * @return Hash with trailing newline character removed.
+     */
+    private String removeNewLine(String hash) {
+        int length = hash == null ? 0 : hash.length();
+        if (length > 0 && hash.endsWith("\n")) {
+            return hash.substring(0, length - 1);
+        }
+        return hash;
     }
 
     /**
@@ -338,7 +356,15 @@ public class PasscodeManager  {
      * @return number of failed passcode attempts
      */
     public int getFailedPasscodeAttempts() {
-        return failedPasscodeAttempts;
+        SharedPreferences sp = SalesforceSDKManager.getInstance().getAppContext().getSharedPreferences(PASSCODE_PREF_NAME, Context.MODE_PRIVATE);
+        return sp.getInt(FAILED_ATTEMPTS, 0);
+    }
+
+    private void setFailedPasscodeAttempts(int failedPasscodeAttempts) {
+        SharedPreferences sp = SalesforceSDKManager.getInstance().getAppContext().getSharedPreferences(PASSCODE_PREF_NAME, Context.MODE_PRIVATE);
+        Editor e = sp.edit();
+        e.putInt(FAILED_ATTEMPTS, failedPasscodeAttempts);
+        e.commit();
     }
 
     /**
@@ -370,9 +396,7 @@ public class PasscodeManager  {
      * @param ctx
      */
     public void lock(Context ctx) {
-        locked = true;
         showLockActivity(ctx, false);
-        EventsObservable.get().notifyEvent(EventType.AppLocked);
     }
 
     /**
@@ -473,7 +497,17 @@ public class PasscodeManager  {
         return minPasscodeLength;
     }
 
-    public void setMinPasscodeLength(int minPasscodeLength) {
+    public boolean setMinPasscodeLength(int minPasscodeLength) {
+        return setMinPasscodeLength(SalesforceSDKManager.getInstance().getAppContext(), minPasscodeLength);
+    }
+
+    /**
+     * @param ctx
+     * @param minPasscodeLength
+     * @return true if a passcode change is required and the app is entering a locked state.
+     */
+    public boolean setMinPasscodeLength(Context ctx, int minPasscodeLength) {
+        boolean passcodeChangeRequired = false;
     	if (minPasscodeLength > this.minPasscodeLength) {
             this.minPasscodeLength = minPasscodeLength;
 
@@ -483,13 +517,14 @@ public class PasscodeManager  {
              * the minimum length in memory. The 'Create Passcode' flow is
              * triggered later from OAuthWebviewHelper.
              */
-            if (hasStoredPasscode(SalesforceSDKManager.getInstance().getAppContext())) {
-        		showLockActivity(SalesforceSDKManager.getInstance().getAppContext(),
-        				true);
+            if (hasStoredPasscode(ctx)) {
+                showLockActivity(ctx, true);
+                passcodeChangeRequired = true;
             }
     	}
         this.minPasscodeLength = minPasscodeLength;
-        storeMobilePolicy(SalesforceSDKManager.getInstance().getAppContext());
+        storeMobilePolicy(ctx);
+        return passcodeChangeRequired;
     }
 
     public boolean shouldLock() {
@@ -497,9 +532,8 @@ public class PasscodeManager  {
     }
 
     public void showLockActivity(Context ctx, boolean changePasscodeFlow) {
-        if (ctx == null) {
-        	return;
-        }
+        locked = true;
+        if (ctx != null) {
         final Intent i = new Intent(ctx, SalesforceSDKManager.getInstance().getPasscodeActivity());
         i.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
         i.addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY);
@@ -514,6 +548,8 @@ public class PasscodeManager  {
             ctx.startActivity(i);
         }
     }
+        EventsObservable.get().notifyEvent(EventType.AppLocked);
+    }
 
     public void unlock(String passcode) {
         passcodeHash = hashForEncryption(passcode);
@@ -525,8 +561,9 @@ public class PasscodeManager  {
      * The passcode hash isn't updated as the authentication is verified by the OS.
      */
     public void unlock() {
+        EventBuilderHelper.createAndStoreEvent("passcodeUnlock", null, TAG, null);
         locked = false;
-        failedPasscodeAttempts = 0;
+        setFailedPasscodeAttempts(0);
         updateLast();
         EventsObservable.get().notifyEvent(EventType.AppUnlocked);
     }
@@ -553,16 +590,14 @@ public class PasscodeManager  {
 
     /**
      * Thread checking periodically to see how much has elapsed since the last recorded activity
-      * When that elapsed time exceed timeoutMs, it locks the app
-      */
+     * When that elapsed time exceed timeoutMs, it locks the app
+     */
     private class LockChecker implements Runnable {
         public void run() {
             try {
-            	if (isEnabled()) {
-            		Log.d("LockChecker:run",  "isLocked:" + locked + " elapsedSinceLastActivity:" + ((now() - lastActivity)/1000) + " timeout:" + (timeoutMs / 1000));
-            	}
-                if (!locked)
+                if (!locked) {
                     lockIfNeeded(null, false);
+                }
             } finally {
                 if (handler != null) {
                     handler.postDelayed(this, 20 * 1000);
